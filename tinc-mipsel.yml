@@ -1,0 +1,168 @@
+name: tinc-mipsel
+on:
+  workflow_dispatch:
+env:
+  TZ: Asia/Shanghai
+  CONFIGURE: "./configure --prefix=/opt --host=mipsel-linux-muslsf"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    - name: 下载gcc
+      uses: lmq8267/dl-musl@main
+      with:
+        target: mipsel-linux-muslsf
+        static: true
+        gccpath: /tmp
+
+    - name: gcc 版本
+      run: |
+         mipsel-linux-muslsf-gcc -v
+         echo $CFLAGS
+         mkdir -p src
+    - name: 编译zlib
+      run: |
+         BASE=`pwd`
+         mkdir src/zlib && cd src/zlib
+         wget -q https://zlib.net/zlib-1.3.1.tar.gz
+         tar zxf zlib-1.3.1.tar.gz
+         cd zlib-1.3.1
+
+         LDFLAGS=$LDFLAGS \
+         CPPFLAGS=$CPPFLAGS \
+         CFLAGS=$CFLAGS \
+         CXXFLAGS=$CXXFLAGS \
+         CROSS_PREFIX=mipsel-linux-muslsf- \
+         ./configure \
+         --prefix=/opt \
+         --static
+
+         make -j`nproc`
+         make install DESTDIR=$BASE
+    - name: 编译lzo
+      run: |
+         BASE=`pwd`
+         mkdir src/lzo && cd src/lzo
+         wget -q http://www.oberhumer.com/opensource/lzo/download/lzo-2.10.tar.gz
+         tar zxf lzo-2.10.tar.gz
+         cd lzo-2.10
+
+         LDFLAGS=$LDFLAGS \
+         CPPFLAGS=$CPPFLAGS \
+         CFLAGS=$CFLAGS \
+         CXXFLAGS=$CXXFLAGS \
+         $CONFIGURE
+
+         make -j`nproc`
+         make install DESTDIR=$BASE
+    - name: 编译openssl
+      run: |
+         BASE=`pwd`
+         LDFLAGS="$LDFLAGS -L$BASE/opt/lib -Wl,--gc-sections"
+         CPPFLAGS="$CPPFLAGS -I$BASE/opt/include -I$BASE/opt/include/ncursesw"
+         CXXFLAGS=$CFLAGS
+         mkdir src/openssl && cd src/openssl
+         wget -q https://www.openssl.org/source/openssl-1.1.1w.tar.gz
+         tar zxf openssl-1.1.1w.tar.gz
+         cd openssl-1.1.1w
+
+         ./Configure linux-mips32 no-shared \
+         --prefix=/opt zlib \
+         --with-zlib-lib=$BASE/opt/lib \
+         --with-zlib-include=$BASE/opt/include
+
+         make
+         make install INSTALLTOP=$BASE/opt OPENSSLDIR=$BASE/opt/ssl
+
+    - name: 编译curses
+      run: |
+         BASE=`pwd`
+         mkdir src/curses && cd src/curses
+         wget -q http://ftp.gnu.org/gnu/ncurses/ncurses-6.5.tar.gz
+         tar zxf ncurses-6.5.tar.gz
+         cd ncurses-6.5
+
+         $CONFIGURE \
+         --enable-widec \
+         --enable-overwrite \
+         --with-normal \
+         --with-shared \
+         --enable-rpath \
+         --with-fallbacks=xterm \
+         --without-progs
+
+         make -j`nproc`
+         make install DESTDIR=$BASE
+
+         ln -s libncursesw.a $BASE/opt/lib/libcurses.a
+
+    - name: 编译libreadline
+      run: |
+         BASE=`pwd`
+         mkdir src/libreadline && cd src/libreadline
+         wget -q http://ftp.gnu.org/gnu/readline/readline-8.2.13.tar.gz
+         tar zxf readline-8.2.13.tar.gz
+         cd readline-8.2.13
+
+         LDFLAGS=$LDFLAGS \
+         CPPFLAGS=$CPPFLAGS \
+         CFLAGS=$CFLAGS \
+         CXXFLAGS=$CXXFLAGS \
+         $CONFIGURE \
+         --disable-shared \
+         bash_cv_wcwidth_broken=no \
+         bash_cv_func_sigsetjmp=yes
+
+         make -j`nproc`
+         make install DESTDIR=$BASE
+
+    - name: 编译tinc
+      run: |
+         BASE=`pwd`
+         LDFLAGS="$LDFLAGS -L$BASE/opt/lib -Wl,--gc-sections"
+         CPPFLAGS="$CPPFLAGS -I$BASE/opt/include -I$BASE/opt/include/ncursesw"
+         CXXFLAGS=$CFLAGS
+         mkdir src/tinc && cd src/tinc
+         wget https://www.tinc-vpn.org/packages/tinc-1.1pre18.tar.gz
+         tar zxf tinc-1.1pre18.tar.gz
+         cd tinc-1.1pre18
+
+         ./configure \
+         --host=mipsel-linux-muslsf \
+         --prefix=$BASE \
+         --sysconfdir=/etc \
+         --localstatedir=/var \
+         --with-zlib=$BASE/opt \
+         --with-lzo=$BASE/opt \
+         --with-openssl=$BASE/opt \
+         --with-curses=$BASE/opt \
+         --with-readline=$BASE/opt
+
+         make -j`nproc`
+         cd src
+         file tinc
+         file tincd
+         mkdir -p /opt/out
+         cp tinc /opt/out/tinc
+         cp tincd /opt/out/tincd
+         $STRIP /opt/out/tinc
+         $STRIP /opt/out/tincd
+
+    - name: 安装 UPX
+      uses: crazy-max/ghaction-upx@v3
+      with:
+        version: latest
+        install-only: true
+
+    - name: 压缩
+      run: |
+        cd /opt/out
+        cp tinc tinc_upx
+        cp tincd tincd_upx
+        upx --lzma --best tinc_upx tincd_upx
+    - uses: actions/upload-artifact@v4
+      with:
+        name: tinc-mipsel
+        path: /opt/out/*
